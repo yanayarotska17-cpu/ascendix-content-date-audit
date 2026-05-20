@@ -3,10 +3,14 @@ import xml.etree.ElementTree as ET
 import time
 import sys
 from datetime import date
+from docx import Document
+from docx.shared import Pt, RGBColor, Inches
+from docx.oxml.ns import qn
+from docx.oxml import OxmlElement
 
 SITEMAP_INDEX_URL = "https://ascendix.com/sitemap_index.xml"
 NS = {"sm": "http://www.sitemaps.org/schemas/sitemap/0.9"}
-DELAY = 1  # seconds between requests
+DELAY = 1
 
 
 def fetch_xml(url):
@@ -57,21 +61,47 @@ def sort_key(entry):
     return mod
 
 
-def build_table(title, entries):
-    rows = ""
-    for url, mod in entries:
-        display_mod = mod if mod else "unknown"
-        rows += f"    <tr><td><a href=\"{url}\" target=\"_blank\">{url}</a></td><td>{display_mod}</td></tr>\n"
-    return f"""
-<h2>{title} ({len(entries)})</h2>
-<table>
-  <thead>
-    <tr><th>URL</th><th>Last Modified Date</th></tr>
-  </thead>
-  <tbody>
-{rows}  </tbody>
-</table>
-"""
+def set_cell_bg(cell, hex_color):
+    tc = cell._tc
+    tcPr = tc.get_or_add_tcPr()
+    shd = OxmlElement("w:shd")
+    shd.set(qn("w:val"), "clear")
+    shd.set(qn("w:color"), "auto")
+    shd.set(qn("w:fill"), hex_color)
+    tcPr.append(shd)
+
+
+def add_section_table(doc, title, entries):
+    heading = doc.add_heading(level=2)
+    run = heading.add_run(f"{title}  ({len(entries)} pages)")
+    run.font.color.rgb = RGBColor(0x2C, 0x5F, 0x9E)
+
+    table = doc.add_table(rows=1, cols=2)
+    table.style = "Table Grid"
+    table.autofit = False
+    table.columns[0].width = Inches(4.5)
+    table.columns[1].width = Inches(1.8)
+
+    hdr = table.rows[0].cells
+    for cell, text in zip(hdr, ["URL", "Last Modified Date"]):
+        set_cell_bg(cell, "2C5F9E")
+        p = cell.paragraphs[0]
+        run = p.add_run(text)
+        run.bold = True
+        run.font.color.rgb = RGBColor(0xFF, 0xFF, 0xFF)
+        run.font.size = Pt(10)
+
+    for i, (url, mod) in enumerate(entries):
+        row = table.add_row().cells
+        bg = "F4F7FC" if i % 2 == 0 else "FFFFFF"
+        set_cell_bg(row[0], bg)
+        set_cell_bg(row[1], bg)
+        p0 = row[0].paragraphs[0]
+        p0.add_run(url).font.size = Pt(9)
+        p1 = row[1].paragraphs[0]
+        p1.add_run(mod if mod else "unknown").font.size = Pt(9)
+
+    doc.add_paragraph()
 
 
 def main():
@@ -92,10 +122,9 @@ def main():
         if child_root is None:
             continue
         entries = parse_urlset(child_root)
-        print(f"    → {len(entries)} URLs")
+        print(f"    -> {len(entries)} URLs")
         all_entries.extend(entries)
 
-    # Filter out category/author URLs
     filtered = [(url, mod) for url, mod in all_entries
                 if "category" not in url and "author" not in url]
     print(f"Total URLs after filtering: {len(filtered)}")
@@ -110,51 +139,30 @@ def main():
         else:
             pages.append(entry)
 
-    # Sort oldest → newest; unknown last
     blog.sort(key=sort_key)
     cases.sort(key=sort_key)
     pages.sort(key=sort_key)
 
     today = date.today().isoformat()
-    filename = f"ascendix_audit_{today}.html"
+    filename = f"ascendix_audit_{today}.docx"
 
-    html = f"""<!DOCTYPE html>
-<html lang="en">
-<head>
-  <meta charset="UTF-8">
-  <title>Ascendix Site Audit — {today}</title>
-  <style>
-    body {{ font-family: Arial, sans-serif; margin: 2em; color: #222; }}
-    h1 {{ color: #1a3c6e; }}
-    h2 {{ color: #2c5f9e; margin-top: 2em; }}
-    table {{ border-collapse: collapse; width: 100%; margin-top: 0.5em; }}
-    th {{ background: #2c5f9e; color: #fff; padding: 8px 12px; text-align: left; }}
-    td {{ padding: 6px 12px; border-bottom: 1px solid #ddd; word-break: break-all; }}
-    tr:nth-child(even) td {{ background: #f4f7fc; }}
-    a {{ color: #2c5f9e; text-decoration: none; }}
-    a:hover {{ text-decoration: underline; }}
-    .summary {{ background: #eef2fa; padding: 1em 1.5em; border-radius: 6px; margin-bottom: 1em; }}
-  </style>
-</head>
-<body>
-  <h1>Ascendix Site Audit</h1>
-  <div class="summary">
-    <strong>Generated:</strong> {today}<br>
-    <strong>Blog posts:</strong> {len(blog)} &nbsp;|&nbsp;
-    <strong>Cases:</strong> {len(cases)} &nbsp;|&nbsp;
-    <strong>Pages:</strong> {len(pages)} &nbsp;|&nbsp;
-    <strong>Total:</strong> {len(blog) + len(cases) + len(pages)}
-  </div>
-{build_table("Blog Posts", blog)}
-{build_table("Cases", cases)}
-{build_table("Pages", pages)}
-</body>
-</html>
-"""
+    doc = Document()
 
-    with open(filename, "w", encoding="utf-8") as f:
-        f.write(html)
+    title = doc.add_heading(level=1)
+    run = title.add_run(f"Ascendix Site Audit — {today}")
+    run.font.color.rgb = RGBColor(0x1A, 0x3C, 0x6E)
 
+    summary = doc.add_paragraph()
+    summary.add_run(
+        f"Blog posts: {len(blog)}    |    Cases: {len(cases)}    |    Pages: {len(pages)}    |    Total: {len(blog)+len(cases)+len(pages)}"
+    ).font.size = Pt(11)
+    doc.add_paragraph()
+
+    add_section_table(doc, "Blog Posts", blog)
+    add_section_table(doc, "Cases", cases)
+    add_section_table(doc, "Pages", pages)
+
+    doc.save(filename)
     print(f"Report saved: {filename}")
 
 
